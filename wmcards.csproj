@@ -63,8 +63,10 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="CardFaction.cs" />
     <Compile Include="CardInformationDownloader.cs" />
     <Compile Include="CardItem.cs" />
+    <Compile Include="CardSummary.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
