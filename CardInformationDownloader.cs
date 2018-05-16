@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -37,7 +36,7 @@ namespace wmcards
             }
 
             _client = new HttpClient();
-            _mutex = new SemaphoreSlim(5);
+            _mutex = new SemaphoreSlim(3);
             _uri = uri;
         }
 
@@ -53,21 +52,26 @@ namespace wmcards
                 throw new ArgumentOutOfRangeException(nameof(outputDirectory), $"{nameof(outputDirectory)} does not exist.");
             }
 
-            var cardList = await GetCardList(_client, _uri);
-            var cardsByFaction = cardList.GroupBy(c => c.Faction);
+            var cardSummary = await GetCardSummary(_client, _uri);
+            var cardsByFaction = cardSummary.Cards.GroupBy(c => c.Faction);
+
+            var innerDirectories = outputDirectory.GetDirectories()
+                .ToDictionary(d => d.Name);
 
             foreach (var factionCards in cardsByFaction)
             {
-                string folderName = FormatFilename(factionCards.Key, '-');
-                DirectoryInfo factionDirectory = outputDirectory.CreateSubdirectory(folderName);
-                Dictionary<string, CardItem> factionDictionary = factionCards.ToDictionary(c => FormatFilename(c.Title, '-'));
+                var factionDirectory = innerDirectories.ContainsKey(factionCards.Key) ?
+                    innerDirectories[factionCards.Key] :
+                    outputDirectory.CreateSubdirectory(factionCards.Key);
 
-                await CreateFactionIndex(factionDirectory, factionDictionary);
+                var factionDictionary = factionCards.ToDictionary(c => FormatFilename(c.Title, '-'));
+
                 await DownloadFactionCards(factionDirectory, factionDictionary, _client, _uri, _mutex);
+                await CreateFactionIndex(factionDirectory, cardSummary.FactionNames[factionCards.Key], factionCards);
             }
         }
 
-        private static async Task CreateFactionIndex(DirectoryInfo factionDirectory, Dictionary<string, CardItem> factionDictionary)
+        private static async Task CreateFactionIndex(DirectoryInfo factionDirectory, string factionName, IEnumerable<CardItem> factionCards)
         {
             if (factionDirectory == null)
             {
@@ -79,17 +83,23 @@ namespace wmcards
                 throw new ArgumentOutOfRangeException(nameof(factionDirectory), $"{nameof(factionDirectory)} does not exist.");
             }
 
-            if (factionDictionary == null)
+            if (string.IsNullOrWhiteSpace(factionName))
             {
-                throw new ArgumentNullException(nameof(factionDictionary));
+                throw new ArgumentNullException(nameof(factionName));
+            }
+
+            if (factionCards == null)
+            {
+                throw new ArgumentNullException(nameof(factionCards));
             }
 
             Stream fs = null;
+            CardFaction faction = new CardFaction(factionName, factionCards);
 
             try
             {
                 fs = new FileStream(Path.Combine(factionDirectory.FullName, "__cardindex.json"), FileMode.Create);
-                await JsonSerializer.SerializeAsync(fs, factionDictionary, StandardResolver.CamelCase);
+                await JsonSerializer.SerializeAsync(fs, faction, StandardResolver.CamelCase);
                 await fs.FlushAsync();
             }
             catch
@@ -159,7 +169,8 @@ namespace wmcards
                     client.GetAsync(uri).ContinueWith(async t => {
                         mutex.Release();
                         Stream s = await t.Result.Content.ReadAsStreamAsync();
-                        await ProcessCard(factionDirectory, s, card.Key);
+                        var images = await ProcessCard(factionDirectory, s, card.Key);
+                        card.Value.UpdateImageNames(images);
                     })
                 );
 
@@ -168,13 +179,13 @@ namespace wmcards
             await Task.WhenAll(tasks);
         }
 
-        private static async Task ProcessCard(DirectoryInfo factionDirectory, Stream stream, string cardKey)
+        private static async Task<IReadOnlyList<string>> ProcessCard(DirectoryInfo factionDirectory, Stream stream, string cardKey)
         {
+            var imageNames = new List<string>();
+
             using (stream)
             using (var document = PdfReader.Open(stream))
             {
-                int imageCount = 0;
-
                 PdfDictionary resources = document.Pages.Elements.GetDictionary("/Resources");
                 PdfDictionary xObjects = resources.Elements.GetDictionary("/XObject");
 
@@ -197,18 +208,22 @@ namespace wmcards
                         continue;
                     }
 
-                    imageCount += 1;
+                    string cardName = $"{cardKey}-{imageNames.Count + 1}.jpg";
 
-                    using (var outfs = new FileStream(Path.Combine(factionDirectory.FullName, $"{cardKey}-{imageCount}.jpg"), FileMode.Create))
+                    using (var outfs = new FileStream(Path.Combine(factionDirectory.FullName, cardName), FileMode.Create))
                     {
                         await outfs.WriteAsync(xObject.Stream.Value, 0, xObject.Stream.Value.Length);
                         await outfs.FlushAsync();
                     }
+
+                    imageNames.Add(cardName);
                 }
             }
+
+            return imageNames;
         }
 
-        private static async Task<IReadOnlyList<CardItem>> GetCardList(HttpClient client, Uri uri)
+        private static async Task<CardSummary> GetCardSummary(HttpClient client, Uri uri)
         {
             if (client == null)
             {
@@ -222,11 +237,16 @@ namespace wmcards
 
             Stream stream = null;
             IReadOnlyList<CardItem> cards = null;
+            IReadOnlyDictionary<string, string> factions = null;
+            HtmlDocument doc = null;
 
             try
             {
                 stream = await client.GetStreamAsync(uri);
-                cards = ProcessCardHtml(stream);
+                doc = new HtmlDocument();
+                doc.Load(stream);
+                cards = ProcessCardHtml(doc);
+                factions = ProcessFactionHtml(doc);
             }
             catch
             {
@@ -235,6 +255,11 @@ namespace wmcards
             }
             finally
             {
+                if (doc != null)
+                {
+                    doc = null;
+                }
+
                 if (stream != null)
                 {
                     stream.Dispose();
@@ -242,13 +267,15 @@ namespace wmcards
                 }
             }
 
-            return cards;
+            return new CardSummary(cards, factions);
         }
 
-        private static IReadOnlyList<CardItem> ProcessCardHtml(Stream stream)
+        private static IReadOnlyList<CardItem> ProcessCardHtml(HtmlDocument doc)
         {
-            var doc = new HtmlDocument();
-            doc.Load(stream);
+            if (doc == null)
+            {
+                throw new ArgumentNullException(nameof(doc));
+            }
 
             var cardNodes = doc.DocumentNode.SelectNodes("//carditem");
             var cards = new List<CardItem>();
@@ -264,6 +291,33 @@ namespace wmcards
             }
 
             return cards;
+        }
+
+        private static IReadOnlyDictionary<string, string> ProcessFactionHtml(HtmlDocument doc)
+        {
+            if (doc == null)
+            {
+                throw new ArgumentNullException(nameof(doc));
+            }
+
+            var factionNode = doc.DocumentNode.SelectSingleNode("//div[@id='general-faction-tabs']");
+            var tabNodes = factionNode.SelectNodes("//a[contains(@class, 'mdl-tabs__tab')]");
+            var tabs = new Dictionary<string, string>();
+
+            foreach (var node in tabNodes)
+            {
+                var href = node.GetAttributeValue("href", string.Empty);
+                var title = node.GetAttributeValue("title", string.Empty);
+
+                if (string.IsNullOrEmpty(href) || string.IsNullOrEmpty(title) || !href.StartsWith("#"))
+                {
+                    continue;
+                }
+
+                tabs.Add(href.Substring(1), title);
+            }
+
+            return tabs;
         }
 
         private static string FormatFilename(string value, char separator)
