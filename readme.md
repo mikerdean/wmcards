@@ -6,7 +6,7 @@ __wmcards__ is a quick and dirty card scraper for Warmachine/Hordes. __wmcards__
 
 This will create a JSON card index for each faction, along with a set of images you can use to create your own documents.
 
-# Usage
+## Usage
 
 __wmcards__ is a .NET console application. Use is as simple as the following:
 
