@@ -28,26 +28,30 @@ namespace wmcards
                 return;
             }
 
+            string tmpPath = Path.Combine(outputDirectory.FullName, "__wmcards.tmp");
+
             try
             {
-                foreach (var file in outputDirectory.EnumerateFiles())
+                using (var fs = new FileStream(tmpPath, FileMode.Create))
                 {
-                    file.Delete();
-                }
-
-                foreach (var dir in outputDirectory.EnumerateDirectories())
-                {
-                    dir.Delete(true);
+                    fs.WriteByte(0xff);
                 }
             }
             catch
             {
-                Console.WriteLine($"The provided output path could not be written to: {outputDirectory.FullName}");
-                Console.WriteLine("Please ensure you are using a directory to which your user has full access (such as your home directory).");
+                Console.WriteLine($"The provided output path does not have write permissions: {outputDirectory.FullName}");
                 return;
+            }
+            finally
+            {
+                if (File.Exists(tmpPath))
+                {
+                    File.Delete(tmpPath);
+                }
             }
 
             MainAsync(outputDirectory).GetAwaiter().GetResult();
+
         }
 
         static async Task MainAsync(DirectoryInfo outputDirectory)
