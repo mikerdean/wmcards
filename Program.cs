@@ -51,7 +51,6 @@ namespace wmcards
             }
 
             MainAsync(outputDirectory).GetAwaiter().GetResult();
-
         }
 
         static async Task MainAsync(DirectoryInfo outputDirectory)

@@ -10,6 +10,7 @@ using HtmlAgilityPack;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.Advanced;
 using PdfSharp.Pdf.IO;
+using Tesseract;
 using Utf8Json;
 using Utf8Json.Resolvers;
 
@@ -99,7 +100,7 @@ namespace wmcards
             try
             {
                 fs = new FileStream(Path.Combine(factionDirectory.FullName, "__cardindex.json"), FileMode.Create);
-                await JsonSerializer.SerializeAsync(fs, faction, StandardResolver.CamelCase);
+                await JsonSerializer.SerializeAsync(fs, faction, StandardResolver.ExcludeNullCamelCase);
                 await fs.FlushAsync();
             }
             catch
@@ -169,8 +170,7 @@ namespace wmcards
                     client.GetAsync(uri).ContinueWith(async t => {
                         mutex.Release();
                         Stream s = await t.Result.Content.ReadAsStreamAsync();
-                        var images = await ProcessCard(factionDirectory, s, card.Key);
-                        card.Value.UpdateImageNames(images);
+                        await ProcessCard(factionDirectory, s, card.Key, card.Value);
                     })
                 );
 
@@ -179,7 +179,7 @@ namespace wmcards
             await Task.WhenAll(tasks);
         }
 
-        private static async Task<IReadOnlyList<string>> ProcessCard(DirectoryInfo factionDirectory, Stream stream, string cardKey)
+        private static async Task ProcessCard(DirectoryInfo factionDirectory, Stream stream, string cardKey, CardItem card)
         {
             var imageNames = new List<string>();
 
@@ -209,18 +209,111 @@ namespace wmcards
                     }
 
                     string cardName = $"{cardKey}-{imageNames.Count + 1}.jpg";
+                    string filename = Path.Combine(factionDirectory.FullName, cardName);
 
-                    using (var outfs = new FileStream(Path.Combine(factionDirectory.FullName, cardName), FileMode.Create))
+                    using (var outfs = new FileStream(filename, FileMode.Create))
                     {
                         await outfs.WriteAsync(xObject.Stream.Value, 0, xObject.Stream.Value.Length);
                         await outfs.FlushAsync();
+                    }
+
+                    if (imageNames.Count == 0)
+                    {
+                        UpdateCardUsingOCR(filename, card);
                     }
 
                     imageNames.Add(cardName);
                 }
             }
 
-            return imageNames;
+            card.UpdateImageNames(imageNames);
+        }
+
+        private static void UpdateCardUsingOCR(string filename, CardItem card)
+        {
+            using (var engine = new TesseractEngine(@"./tessdata", "eng", EngineMode.Default))
+            using (var pix = Pix.LoadFromFile(filename))
+            {
+                if (card.Job.Equals("Unit", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var points6 = engine.Process(pix, Rect.FromCoords(614, 987, 642, 1010), PageSegMode.SingleWord))
+                    {
+                        UpdateCardInteger(card, card.UpdatePoints6, points6.GetText());
+                    }
+
+                    using (var points10 = engine.Process(pix, Rect.FromCoords(614, 1007, 642, 1032), PageSegMode.SingleWord))
+                    {
+                        UpdateCardInteger(card, card.UpdatePoints10, points10.GetText());
+                    }
+
+                    using (var min = engine.Process(pix, Rect.FromCoords(485, 989, 500, 1008), PageSegMode.SingleChar))
+                    {
+                        UpdateCardInteger(card, card.UpdateSizeMinimum, min.GetText());
+                    }
+
+                    using (var max = engine.Process(pix, Rect.FromCoords(485, 1007, 500, 1027), PageSegMode.SingleChar))
+                    {
+                        UpdateCardInteger(card, card.UpdateSizeMaximum, max.GetText());
+                    }
+                }
+                else
+                {
+                    using (var points = engine.Process(pix, Rect.FromCoords(608, 1010, 645, 1030), PageSegMode.SingleWord))
+                    {
+                        UpdateCardInteger(card, card.UpdatePoints, points.GetText());
+                    }
+                }
+
+                if (card.Job.Equals("Warcaster", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var focus = engine.Process(pix, Rect.FromCoords(180, 635, 215, 690), PageSegMode.SingleWord))
+                    {
+                        UpdateCardInteger(card, card.UpdateFocus, focus.GetText());
+                    }
+                }
+
+                if (card.Job.Equals("Warlock", StringComparison.OrdinalIgnoreCase))
+                {
+                    using (var focus = engine.Process(pix, Rect.FromCoords(180, 640, 220, 685), PageSegMode.SingleWord))
+                    {
+                        UpdateCardInteger(card, card.UpdateFury, focus.GetText());
+                    }
+                }
+
+                using (var fieldAllowance = engine.Process(pix, Rect.FromCoords(690, 1010, 710, 1030), PageSegMode.SingleChar))
+                {
+                    UpdateCardInteger(card, card.UpdateFieldAllowance, fieldAllowance.GetText(), 
+                        txt => txt.Equals("C", StringComparison.OrdinalIgnoreCase) ? 1 : -1,
+                        txt => txt.Equals("U", StringComparison.OrdinalIgnoreCase) ? 999 : -1
+                    );
+                }
+            }
+        }
+
+        private static void UpdateCardInteger(CardItem card, Action<int> method, string text, params Func<string, int>[] tests)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            string formatted = text.Trim();
+
+            foreach(var test in tests)
+            {
+                int result = test(formatted);
+                if (result > 0)
+                {
+                    method(result);
+                    return;
+                }
+            }
+
+            int tmp;
+            if (int.TryParse(formatted, out tmp))
+            {
+                method(tmp);
+            }
         }
 
         private static async Task<CardSummary> GetCardSummary(HttpClient client, Uri uri)
