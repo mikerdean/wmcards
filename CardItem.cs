@@ -12,14 +12,14 @@ namespace wmcards
 
         public IReadOnlyList<string> Images { get; private set; }
         public string Title { get; private set; }
+        public bool? Attachment { get; private set; }
+        public int? BonusPoints { get; private set; }
         public int? Points { get; private set; }
-        public int? Points6 { get; private set; }
-        public int? Points10 { get; private set; }
-        public int? FieldAllowance { get; private set; }
-        public int? Focus { get; private set; }
-        public int? Fury { get; private set; }
+        public int? PointsMinimum { get; private set; }
+        public int? PointsMaximum { get; private set; }
         public int? SizeMinimum { get; private set; }
         public int? SizeMaximum { get; private set; }
+        public int? FieldAllowance { get; private set; }
 
         public CardItem(int id, string faction, string job, string title)
         {
@@ -49,6 +49,11 @@ namespace wmcards
             Title = EscapeHtmlEntities(title);
         }
 
+        public void UpdateAttachment()
+        {
+            Attachment = true;
+        }
+
         public void UpdateFieldAllowance(int fieldAllowance)
         {
             if (fieldAllowance < -1)
@@ -59,26 +64,6 @@ namespace wmcards
             FieldAllowance = fieldAllowance;
         }
 
-        public void UpdateFocus(int focus)
-        {
-            if (focus < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(focus));
-            }
-
-            Focus = focus;
-        }
-
-        public void UpdateFury(int fury)
-        {
-            if (fury < 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(fury));
-            }
-
-            Fury = fury;
-        }
-
         public void UpdatePoints(int points)
         {
             if (points < 0)
@@ -86,27 +71,55 @@ namespace wmcards
                 throw new ArgumentOutOfRangeException(nameof(points));
             }
 
-            Points = points;
+            if (Job.Equals("Warcaster", StringComparison.OrdinalIgnoreCase) || Job.Equals("Warlock", StringComparison.OrdinalIgnoreCase))
+            {
+                BonusPoints = points;
+                Points = 0;
+            }
+            else
+            {
+                Points = points;
+            }
         }
 
-        public void UpdatePoints6(int points)
+        public void UpdatePointsMin(int points)
         {
             if (points < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(points));
             }
 
-            Points6 = points;
+            PointsMinimum = points;
         }
 
-        public void UpdatePoints10(int points)
+        public void UpdatePointsMax(int points)
         {
             if (points < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(points));
             }
 
-            Points10 = points;
+            PointsMaximum = points;
+        }
+
+        public void UpdateSizeMin(int size)
+        {
+            if (size < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(size));
+            }
+
+            SizeMinimum = size + 1;
+        }
+
+        public void UpdateSizeMax(int size)
+        {
+            if (size < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(size));
+            }
+
+            SizeMaximum = size + 1;
         }
 
         public void UpdateImageNames(IReadOnlyList<string> imageLocations)
@@ -119,30 +132,15 @@ namespace wmcards
             Images = imageLocations;
         }
 
-        public void UpdateSizeMinimum(int size)
-        {
-            if (size < 1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(size));
-            }
-
-            SizeMinimum = (size + 1);
-        }
-
-        public void UpdateSizeMaximum(int size)
-        {
-            if (size < 1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(size));
-            }
-
-            SizeMaximum = (size + 1);
-        }
-
         private static string EscapeHtmlEntities(string value)
         {
             value = WebUtility.HtmlDecode(value);
             return value.Replace("&comma;", ","); // this is bad but yeah
+        }
+
+        public override string ToString()
+        {
+            return Title ?? "Unknown";
         }
     }
 }

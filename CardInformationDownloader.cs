@@ -1,9 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using HtmlAgilityPack;
@@ -19,6 +23,8 @@ namespace wmcards
     class CardInformationDownloader : IDisposable
     {
         private const string _allowedFilenameCharacters = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        private static readonly Regex _unitCostExpression = new Regex(@"(?:.\s)([0-9]{1,})", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
         private HttpClient _client;
         private bool _disposed;
         private SemaphoreSlim _mutex;
@@ -229,66 +235,130 @@ namespace wmcards
             card.UpdateImageNames(imageNames);
         }
 
-        private static void UpdateCardUsingOCR(string filename, CardItem card)
+        internal static void UpdateCardUsingOCR(string filename, CardItem card)
         {
             using (var engine = new TesseractEngine(@"./tessdata", "eng", EngineMode.Default))
-            using (var pix = Pix.LoadFromFile(filename))
+            using (var bitmap = RescaleBitmap(new Bitmap(filename), 2000, 2800))
+            using (var pix = PixConverter.ToPix(bitmap))
             {
                 if (card.Job.Equals("Unit", StringComparison.OrdinalIgnoreCase))
                 {
-                    using (var points6 = engine.Process(pix, Rect.FromCoords(614, 987, 642, 1010), PageSegMode.SingleWord))
+                    string unitSubtitle = null;
+                    using (var subtitle = engine.Process(pix, Rect.FromCoords(405, 205, 1750, 260), PageSegMode.SingleBlock))
                     {
-                        UpdateCardInteger(card, card.UpdatePoints6, points6.GetText());
+                        unitSubtitle = subtitle.GetText();
                     }
 
-                    using (var points10 = engine.Process(pix, Rect.FromCoords(614, 1007, 642, 1032), PageSegMode.SingleWord))
+                    if (string.IsNullOrWhiteSpace(unitSubtitle))
                     {
-                        UpdateCardInteger(card, card.UpdatePoints10, points10.GetText());
+                        throw new NotSupportedException("Unit title could not be acquired by OCR.");
                     }
 
-                    using (var min = engine.Process(pix, Rect.FromCoords(485, 989, 500, 1008), PageSegMode.SingleChar))
+                    if (unitSubtitle.IndexOf("ATTACHMENT", StringComparison.OrdinalIgnoreCase) > -1)
                     {
-                        UpdateCardInteger(card, card.UpdateSizeMinimum, min.GetText());
-                    }
+                        card.UpdateAttachment();
 
-                    using (var max = engine.Process(pix, Rect.FromCoords(485, 1007, 500, 1027), PageSegMode.SingleChar))
+                        using (var points = engine.Process(pix, Rect.FromCoords(1640, 2690, 1705, 2745), PageSegMode.SingleBlock))
+                        {
+                            UpdateCardInteger(card, card.UpdatePoints, points.GetText());
+                        }
+                    }
+                    else
                     {
-                        UpdateCardInteger(card, card.UpdateSizeMaximum, max.GetText());
+                        string unitCosts = null;
+                        using (var costs = engine.Process(pix, Rect.FromCoords(1105, 2640, 1710, 2740), PageSegMode.SingleBlock))
+                        {
+                            unitCosts = costs.GetText();
+                        }
+
+                        if (string.IsNullOrWhiteSpace(unitCosts))
+                        {
+                            throw new NotSupportedException("Unit cost area could not be acquired by OCR.");
+                        }
+
+                        string[] lines = unitCosts.Split('\n');
+                        var points = new List<string>();
+                        var sizes = new List<string>();
+
+                        for (int i = 0; i < lines.Length; i += 1)
+                        {
+                            if (string.IsNullOrWhiteSpace(lines[i]))
+                            {
+                                if (i == 0 || i == 1)
+                                {
+                                    continue;
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+
+                            // we're not whitespace, process the line with a poor regex
+                            var matches = _unitCostExpression.Matches(lines[i]);
+                            if (matches.Count == 1)
+                            {
+                                points.Add(matches[0].Groups[1].Value);
+                            }
+                            else if (matches.Count == 2)
+                            {
+                                sizes.Add(matches[0].Groups[1].Value);
+                                points.Add(matches[1].Groups[1].Value);
+                            }                            
+                        }
+
+                        if (points.Count == 1)
+                        {
+                            UpdateCardInteger(card, card.UpdatePoints, points[0]);
+                        }
+                        else if (points.Count == 2)
+                        {
+                            UpdateCardInteger(card, card.UpdatePointsMin, points[0]);
+                            UpdateCardInteger(card, card.UpdatePointsMax, points[1]);
+                        }
+
+                        if (sizes.Count == 2)
+                        {
+                            UpdateCardInteger(card, card.UpdateSizeMin, sizes[0]);
+                            UpdateCardInteger(card, card.UpdateSizeMax, sizes[1]);
+                        }
                     }
                 }
                 else
                 {
-                    using (var points = engine.Process(pix, Rect.FromCoords(608, 1010, 645, 1030), PageSegMode.SingleWord))
+                    using (var points = engine.Process(pix, Rect.FromCoords(1620, 2690, 1725, 2745), PageSegMode.SingleBlock))
                     {
                         UpdateCardInteger(card, card.UpdatePoints, points.GetText());
                     }
                 }
 
-                if (card.Job.Equals("Warcaster", StringComparison.OrdinalIgnoreCase))
+                using (var fieldAllowance = engine.Process(pix, Rect.FromCoords(1830, 2690, 1890, 2745), PageSegMode.SingleBlock))
                 {
-                    using (var focus = engine.Process(pix, Rect.FromCoords(180, 635, 215, 690), PageSegMode.SingleWord))
-                    {
-                        UpdateCardInteger(card, card.UpdateFocus, focus.GetText());
-                    }
-                }
-
-                if (card.Job.Equals("Warlock", StringComparison.OrdinalIgnoreCase))
-                {
-                    using (var focus = engine.Process(pix, Rect.FromCoords(180, 640, 220, 685), PageSegMode.SingleWord))
-                    {
-                        UpdateCardInteger(card, card.UpdateFury, focus.GetText());
-                    }
-                }
-
-                using (var fieldAllowance = engine.Process(pix, Rect.FromCoords(690, 1010, 710, 1030), PageSegMode.SingleChar))
-                {
-                    UpdateCardInteger(card, card.UpdateFieldAllowance, fieldAllowance.GetText(), 
+                    UpdateCardInteger(card, card.UpdateFieldAllowance, fieldAllowance.GetText(),
                         txt => txt.Equals("C", StringComparison.OrdinalIgnoreCase) ? 1 : -1,
                         txt => txt.Equals("U", StringComparison.OrdinalIgnoreCase) ? 999 : -1
                     );
                 }
             }
         }
+
+        private static Bitmap RescaleBitmap(Bitmap original, float width, float height)
+        {
+            Bitmap output = new Bitmap((int) width, (int) height);
+            float scale = Math.Min(width / original.Width, height / original.Height);
+
+            using (original)
+            using (var gfx = Graphics.FromImage(output))
+            {
+                int scaleWidth = (int) (original.Width * scale);
+                int scaleHeight = (int) (original.Height * scale);
+                
+                gfx.DrawImage(original, ((int) width - scaleWidth) / 2, ((int) height - scaleHeight) / 2, scaleWidth, scaleHeight);
+            }
+
+            return output;
+        }
+        
 
         private static void UpdateCardInteger(CardItem card, Action<int> method, string text, params Func<string, int>[] tests)
         {
