@@ -6,10 +6,10 @@ namespace wmcards
 {
     public class CardItem
     {
-        internal int Id { get; private set; }
         internal string Faction { get; private set; }
         internal string Job { get; private set; }
 
+        public int Id { get; private set; }
         public IReadOnlyList<string> Images { get; private set; }
         public string Title { get; private set; }
         public bool? Attachment { get; private set; }
