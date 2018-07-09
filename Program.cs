@@ -39,7 +39,7 @@ namespace wmcards
             }
             catch
             {
-                Console.WriteLine($"The provided output path does not have write permissions: {outputDirectory.FullName}");
+                Console.WriteLine($"You do not have write permissions to the output path provided: {outputDirectory.FullName}");
                 return;
             }
             finally
