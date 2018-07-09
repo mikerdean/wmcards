@@ -99,12 +99,14 @@ namespace wmcards
             }
 
             Stream fs = null;
+            byte[] json = null;
             CardFaction faction = new CardFaction(factionName, factionCards);
 
             try
             {
                 fs = new FileStream(Path.Combine(factionDirectory.FullName, "__cardindex.json"), FileMode.Create);
-                await JsonSerializer.SerializeAsync(fs, faction, StandardResolver.ExcludeNullCamelCase);
+                json = JsonSerializer.PrettyPrintByteArray(JsonSerializer.Serialize(faction, StandardResolver.ExcludeNullCamelCase));
+                await fs.WriteAsync(json, 0, json.Length);
                 await fs.FlushAsync();
             }
             catch
@@ -118,6 +120,11 @@ namespace wmcards
                 {
                     fs.Dispose();
                     fs = null;
+                }
+
+                if (json != null)
+                {
+                    json = null;
                 }
             }
         }
@@ -233,7 +240,7 @@ namespace wmcards
             card.UpdateImageNames(imageNames);
         }
 
-        internal static void UpdateCardUsingOCR(string filename, CardItem card)
+        private static void UpdateCardUsingOCR(string filename, CardItem card)
         {
             using (var engine = new TesseractEngine(@"./tessdata", "eng", EngineMode.Default))
             using (var bitmap = RescaleBitmap(new Bitmap(filename), 2000, 2800))
